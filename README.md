@@ -1,0 +1,80 @@
+# shrt-rust
+
+High-performance URL shortener backend — Rust port of
+[shrt-ts](https://github.com/abhijitkrm/shrt-ts) /
+[shrt-go](https://github.com/abhijitkrm/shrt-go), tuned for maximum throughput.
+
+* **HTTP**: custom thread-per-connection server built on
+  [`httparse`](https://docs.rs/httparse) (`SERVER=mini`, default) — one read
+  batch answered by a single write, HTTP pipelining supported;
+  [`hyper`](https://docs.rs/hyper) fallback (`SERVER=hyper`).
+* **Storage**: custom append-only log (AOF) — sharded in-memory index (256
+  shards, `parking_lot` RwLock + `FxHashMap` + atomic hit counters) + batched
+  `write()`/`fsync`. Reads never touch disk; writes are ~ns enqueue + one
+  syscall batch per 5 ms.
+* **JSON**: [`sonic-rs`](https://github.com/cloudwego/sonic-rs) (SIMD) on the
+  write path; log lines are hand-serialized into a scratch buffer (zero JSON,
+  zero per-row allocation on the read/bulk hot paths).
+* **Allocator**: `mimalloc` global allocator; release builds use fat LTO +
+  `codegen-units = 1`.
+* **Codes**: 8 chars = `ALPHABET[instance]` + 7 random base62 chars
+  (62⁷ ≈ 3.5T per instance). The prefix shard-marks every code — unique across
+  processes with zero coordination, and a read-miss knows exactly which sibling
+  log to tail. Checked against the index and retried on collision.
+* **Multi-instance**: `WORKERS=N` spawns N processes that **share one port via
+  SO_REUSEPORT** (the kernel load-balances connections) with per-instance log
+  shards (`data-<i>.log`). Siblings are discovered and tailed **lazily on
+  read-miss** — writes never pay replication cost, so write throughput scales
+  ~linearly with instance count.
+* **Durability**: every append reaches the OS page cache within 5 ms and is
+  fsync'd every 500 ms — a process crash loses ≤5 ms of writes, a machine
+  crash ≤~500 ms (tunable constants in `src/store.rs`; snapshot+truncate via
+  `compact()`).
+
+## Quickstart
+
+```sh
+cargo build --release
+./target/release/shrt                    # :3000, mini server, 1 instance
+WORKERS=4 ./target/release/shrt          # 4 instances sharing :3000
+SERVER=hyper ./target/release/shrt       # hyper frontend
+```
+
+## API (identical to shrt-ts / shrt-go)
+
+| route | method | description |
+|---|---|---|
+| `/api/shorten` | POST | `{"url","alias"?,"ttl_ms"?}` → `{"code","short_url"}` |
+| `/api/shorten/bulk` | POST | `{"urls":[...]}` (≤10k) → `{"count","codes"}` |
+| `/:code` | GET | 302 redirect (counts a hit) |
+| `/api/stats/:code` | GET | `{"code","url","hits","created_at","expires_at"}` |
+| `/api/links` | GET | `?limit&offset&sort=hits|created&q` (admin list) |
+| `/api/links/:code` | PATCH/DELETE | requires `ADMIN_TOKEN` + `x-admin-token` header |
+| `/api/health` `/api/metrics` | GET | health / request counters |
+| `/` | GET | built-in UI (`ui/index.html`) |
+
+## Config (env)
+
+`PORT` (3000) · `DATA_DIR` (`data`) · `WORKERS` (1) · `SERVER` (`mini`|`hyper`)
+· `SEED` (pre-generate N links at boot) · `ADMIN_TOKEN` · `CORS_ORIGIN` (`*`)
+· `LINK_TTL_MS` (86400000, capped at this value)
+
+## Bench
+
+```sh
+cargo run --release --bin shrt-bench     # spawns real servers, drives raw-TCP load
+bash scripts/smoke.sh                    # end-to-end API smoke
+bash scripts/flood.sh                    # write flood (autocannon if installed)
+cargo test                               # 32 tests: store engine + API × both frontends
+```
+
+Measured on Apple Silicon (client+server colocated, 64 conns):
+
+| scenario | shrt-rust | shrt-go | shrt-ts |
+|---|---|---|---|
+| redirect | **~208k req/s** | ~197k | ~133k |
+| redirect, pipelined ×10 | ~409k req/s | ~457k | ~320k |
+| mixed 95/5 | **~205k req/s** | ~185k | ~115k |
+| shorten | **~175k req/s** | ~158k | ~72k |
+| bulk ×1000 | **~4.1M rows/s** | ~2.1M | ~640k |
+| redirect ×4 workers | ~184k req/s | — | — |

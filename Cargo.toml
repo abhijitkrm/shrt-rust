@@ -1,0 +1,46 @@
+[package]
+name = "shrt"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance URL shortener backend — Rust port of shrt-ts"
+license = "ISC"
+
+[lib]
+name = "shrt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "shrt"
+path = "src/bin/shrt.rs"
+
+[[bin]]
+name = "shrt-bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+httparse = "1"
+socket2 = { version = "0.6", features = ["all"] }
+rustc-hash = "2"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+sonic-rs = "0.5"
+url = "2"
+rand = "0.9"
+libc = "0.2"
+ctrlc = { version = "3", features = ["termination"] }
+mimalloc = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["server", "tokio", "http1"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

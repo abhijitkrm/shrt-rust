@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>shrt — short links, serious speed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #f4f1ea;
+    --paper-2: #ede9df;
+    --ink: #16150f;
+    --ink-2: #5c5849;
+    --line: #d8d2c2;
+    --accent: #1e4d33;
+    --accent-soft: #e2ecdd;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { color-scheme: light; }
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 500px at 80% -10%, #ece7d8 0%, transparent 60%),
+      var(--paper);
+    color: var(--ink);
+    font-family: "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: var(--paper); }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px 90px; }
+
+  /* ---------- nav ---------- */
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 26px 0; border-bottom: 1px solid var(--line);
+  }
+  .logo { font-family: "Instrument Serif", serif; font-size: 30px; letter-spacing: -.5px; }
+  .logo i { font-style: italic; color: var(--accent); }
+  .pill {
+    display: flex; align-items: center; gap: 8px;
+    font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--ink-2);
+    border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px;
+  }
+  .pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 2.2s infinite; }
+  .pill.off i { background: #b3413a; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 84px 0 56px; }
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 22px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .eyebrow::before { content: ""; width: 36px; height: 1px; background: var(--accent); }
+  h1 {
+    font-family: "Instrument Serif", serif; font-weight: 400;
+    font-size: clamp(52px, 8.4vw, 104px); line-height: .98; letter-spacing: -2.5px;
+    margin-bottom: 26px;
+  }
+  h1 em { font-style: italic; color: var(--accent); }
+  .sub { font-size: 17px; line-height: 1.6; color: var(--ink-2); max-width: 520px; }
+  .sub code { font-family: "JetBrains Mono", monospace; font-size: 14px; }
+
+  /* ---------- composer ---------- */
+  .composer {
+    display: flex; align-items: stretch; border: 1px solid var(--ink);
+    border-radius: var(--radius); background: #fff; overflow: hidden;
+    box-shadow: 0 24px 60px -30px rgba(22,21,15,.35);
+  }
+  .composer input {
+    font: inherit; border: 0; outline: none; background: transparent;
+    padding: 20px 18px; color: var(--ink); min-width: 0;
+  }
+  .composer input::placeholder { color: #a29c88; }
+  #url { flex: 1; font-size: 16px; }
+  .btn {
+    font: inherit; font-weight: 600; font-size: 15px; cursor: pointer; border: 0;
+    background: var(--ink); color: var(--paper); padding: 0 30px;
+    letter-spacing: .2px; transition: background .2s, transform .12s;
+  }
+  .btn:hover { background: var(--accent); }
+  .btn:active { transform: scale(.98); }
+
+  #result {
+    display: none; margin-top: 14px; padding: 18px 22px;
+    border: 1px solid var(--accent); border-radius: var(--radius);
+    background: var(--accent-soft);
+    align-items: baseline; gap: 16px;
+    animation: rise .4s cubic-bezier(.2,.9,.3,1.15);
+  }
+  #result.show { display: flex; }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+  #shortUrl {
+    font-family: "Instrument Serif", serif; font-size: 30px; letter-spacing: -.5px;
+    color: var(--ink); text-decoration: none; border-bottom: 2px solid var(--accent);
+  }
+  #shortUrl:hover { color: var(--accent); }
+  .ghost {
+    font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+    color: var(--ink); background: transparent; border: 1px solid var(--ink);
+    border-radius: 8px; padding: 8px 16px; margin-left: auto; transition: .2s;
+  }
+  .ghost:hover { background: var(--ink); color: var(--paper); }
+  .ghost.ok { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+  .hint { font-size: 12px; color: var(--ink-2); margin-top: 10px; padding-left: 4px; }
+
+  /* ---------- stats ---------- */
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    margin: 64px 0 70px;
+  }
+  .stat { padding: 30px 8px 30px 0; }
+  .stat + .stat { border-left: 1px solid var(--line); padding-left: 28px; }
+  .stat .n {
+    font-family: "Instrument Serif", serif; font-size: clamp(34px, 4.6vw, 54px);
+    line-height: 1; letter-spacing: -1px; font-variant-numeric: tabular-nums;
+  }
+  .stat .l {
+    margin-top: 10px; font-family: "JetBrains Mono", monospace;
+    font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--ink-2);
+  }
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 20px; margin-top: 12px; }
+  .spark i {
+    flex: 1; min-height: 1px; background: var(--accent); border-radius: 1px;
+    opacity: .8; transition: height .3s ease;
+  }
+
+  footer {
+    margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--line);
+    display: flex; justify-content: space-between;
+    font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-2);
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+
+  /* ---------- reveal + toasts ---------- */
+  .rev { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s cubic-bezier(.2,.8,.3,1); }
+  .rev.in { opacity: 1; transform: none; }
+  #toasts { position: fixed; right: 22px; bottom: 22px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
+  .toast {
+    background: var(--ink); color: var(--paper); border-radius: 10px;
+    padding: 13px 18px; font-size: 13px; letter-spacing: .2px;
+    animation: toastIn .3s cubic-bezier(.2,.9,.3,1.2), toastOut .3s ease 2.6s forwards;
+    box-shadow: 0 14px 40px rgba(22,21,15,.3);
+  }
+  .toast.err { background: #7a2e28; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(14px); } }
+  @keyframes toastOut { to { opacity: 0; transform: translateY(14px); } }
+
+  @media (max-width: 720px) {
+    .composer { flex-direction: column; }
+    .btn { padding: 16px; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .stat + .stat { padding-left: 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav>
+    <div class="logo">shrt<i>.</i></div>
+    <div class="pill" id="healthPill"><i></i><span id="health">connecting</span></div>
+  </nav>
+
+  <div class="hero rev">
+    <div class="eyebrow">High-performance URL shortener</div>
+    <h1>Short links.<br /><em>Serious speed.</em></h1>
+    <p class="sub">Every link lives for exactly one day.</p>
+  </div>
+
+  <form class="composer rev" id="form">
+    <input id="url" type="url" placeholder="https://a-very-long-url.example/with?everything=on&it=1" required autocomplete="off" />
+    <button class="btn" type="submit">Shorten</button>
+  </form>
+  <div class="hint rev">public links are immutable — created once, gone in 24 h</div>
+
+  <div id="result">
+    <a id="shortUrl" href="#" target="_blank" rel="noopener"></a>
+    <button class="ghost" id="copyBtn" type="button">copy</button>
+  </div>
+
+  <div class="stats rev">
+    <div class="stat"><div class="n" id="stLinks">—</div><div class="l">Links indexed</div></div>
+    <div class="stat"><div class="n" id="stHits">—</div><div class="l">Redirects served</div></div>
+    <div class="stat"><div class="n" id="stRps">0</div><div class="l">Live req/s</div><div class="spark" id="spark"></div></div>
+    <div class="stat"><div class="n">24<span style="font-size:.5em">h</span></div><div class="l">Link lifetime</div></div>
+  </div>
+
+  <footer>
+    <span>built using typescript</span>
+    <span>maintained by <a href="https://github.com/abhijitkrm" target="_blank" rel="noopener" style="color:inherit;border-bottom:1px solid var(--accent);text-decoration:none">abhijitkrm</a></span>
+  </footer>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+const API = location.origin.startsWith("http") ? location.origin : "http://localhost:3000";
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, err) {
+  const t = document.createElement("div");
+  t.className = "toast" + (err ? " err" : "");
+  t.textContent = msg;
+  $("toasts").appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+async function api(path, opts) {
+  const res = await fetch(API + path, opts);
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.status);
+  return body;
+}
+
+const fmtN = (n) => n.toLocaleString("en-US");
+
+async function tickMetrics() {
+  try {
+    const m = await api("/api/metrics");
+    $("stRps").textContent = fmtN(m.req_s);
+    const max = Math.max(...m.per_second, 1);
+    $("spark").innerHTML = m.per_second
+      .map((v) => `<i style="height:${Math.max(4, (v / max) * 100)}%"></i>`)
+      .join("");
+  } catch {}
+}
+
+async function load() {
+  try {
+    const { links, total } = await api("/api/links?limit=100&sort=hits");
+    $("stLinks").textContent = fmtN(total);
+    $("stHits").textContent = fmtN(links.reduce((a, l) => a + l.hits, 0));
+  } catch {
+    // keep last good render
+  }
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const url = $("url").value.trim();
+  try {
+    const { code } = await api("/api/shorten", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const short = API + "/" + code;
+    $("shortUrl").textContent = short;
+    $("shortUrl").href = short;
+    $("result").classList.add("show");
+    $("url").value = "";
+    toast("created /" + code + " — expires in 24h");
+    load();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+async function copy(code, el) {
+  try {
+    await navigator.clipboard.writeText(API + "/" + code);
+    el.textContent = "copied";
+    el.classList.add("ok");
+    setTimeout(() => { el.textContent = "copy"; el.classList.remove("ok"); }, 1200);
+  } catch { toast("copy failed", true); }
+}
+$("copyBtn").addEventListener("click", (e) =>
+  copy($("shortUrl").textContent.replace(API + "/", ""), e.target));
+
+// scroll reveal
+const io = new IntersectionObserver(
+  (es) => es.forEach((x) => x.isIntersecting && x.target.classList.add("in")),
+  { threshold: 0.08 }
+);
+document.querySelectorAll(".rev").forEach((el) => io.observe(el));
+
+(async () => {
+  try {
+    await api("/api/health");
+    $("health").textContent = "api online";
+  } catch {
+    $("health").textContent = "api offline";
+    $("healthPill").classList.add("off");
+  }
+  load();
+  tickMetrics();
+  setInterval(load, 15000);
+  setInterval(tickMetrics, 1000);
+})();
+</script>
+</body>
+</html>
