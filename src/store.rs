@@ -30,7 +30,7 @@ const FLUSH_BYTES: usize = 256 << 10;
 const CODE_LEN: usize = 8; // 1 instance-prefix char + 7 random base62 chars
 const MAX_INSTANCES: usize = 62; // prefix char space
 const MAX_STRAY_HITS: usize = 10_000;
-const NUM_SHARDS: usize = 256;
+pub(crate) const NUM_SHARDS: usize = 256;
 
 fn tail_ms() -> u64 {
     std::env::var("TAIL_MS")
@@ -39,7 +39,7 @@ fn tail_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn track_hits() -> bool {
+pub(crate) fn track_hits() -> bool {
     std::env::var("HITS").map(|v| v != "0").unwrap_or(true)
 }
 
@@ -114,7 +114,7 @@ struct Inner {
 }
 
 #[inline]
-fn shard_of(code: &str) -> usize {
+pub(crate) fn shard_of(code: &str) -> usize {
     // FNV-1a — cheap and well-spread
     let mut h: u32 = 2166136261;
     for &b in code.as_bytes() {
@@ -140,7 +140,7 @@ fn snap_name(i: i32) -> String {
 }
 
 #[derive(Clone)]
-pub struct Store {
+pub struct LocalStore {
     inner: Arc<Inner>,
 }
 
@@ -223,10 +223,10 @@ fn poll_locked(inner: &Inner, tail: &mut Tail) {
     tail.last_poll = now_ms();
 }
 
-impl Store {
+impl LocalStore {
     /// dir ":memory:" disables persistence. instance < 0 auto-claims the
     /// lowest free instance id via lock files.
-    pub fn new(dir: &str, instance: i32) -> std::io::Result<Store> {
+    pub fn new(dir: &str, instance: i32) -> std::io::Result<LocalStore> {
         let mut shards = Vec::with_capacity(NUM_SHARDS);
         for _ in 0..NUM_SHARDS {
             shards.push(Shard {
@@ -273,7 +273,7 @@ impl Store {
             inner.aof = Some(Mutex::new(Aof::new(&inner.dir, &inner.own_name)?));
         }
 
-        let store = Store {
+        let store = LocalStore {
             inner: Arc::new(inner),
         };
         if store.inner.aof.is_some() {
@@ -556,6 +556,10 @@ impl Store {
         self.inner.shards.iter().all(|sh| sh.data.read().is_empty())
     }
 
+    pub fn persistent(&self) -> bool {
+        self.inner.aof.is_some()
+    }
+
     /// Update url/ttl in place. Durable only on the owning instance.
     /// has_ttl=false keeps the existing expiry; otherwise ttl_ms>0 sets
     /// now+ttl_ms and ttl_ms<=0 clears expiry.
@@ -764,5 +768,147 @@ impl Inner {
         }
         let mut tail = self.tail.lock();
         poll_locked(self, &mut tail);
+    }
+}
+
+// ---------- unified store enum ----------
+
+/// One store handle over either backend: the in-process AOF engine
+/// (`Local`) or an external RESP KV (`Kv` — DragonflyDB/Redis).
+#[derive(Clone)]
+pub enum Store {
+    Local(LocalStore),
+    Kv(Arc<crate::store_kv::KvStore>),
+}
+
+impl Store {
+    /// Local (AOF) backend — preserves the original `Store::new` behavior.
+    pub fn new(dir: &str, instance: i32) -> std::io::Result<Store> {
+        LocalStore::new(dir, instance).map(Store::Local)
+    }
+
+    /// External KV backend (DragonflyDB / Redis / any RESP server).
+    pub fn open_kv(
+        addr: &str,
+        instance: i32,
+        cache_entries: usize,
+        cache_ttl_ms: i64,
+    ) -> std::io::Result<Store> {
+        crate::store_kv::KvStore::open(addr, instance, cache_entries, cache_ttl_ms).map(Store::Kv)
+    }
+
+    /// Env-driven dispatch: STORE=aof|local (default) | dragonfly|redis|kv.
+    /// KV_ADDR/DRAGONFLY_ADDR (default 127.0.0.1:6379), CACHE (default 100000),
+    /// CACHE_TTL_MS (default 5000 — bounds cross-node staleness).
+    pub fn from_env(dir: &str, instance: i32) -> std::io::Result<Store> {
+        let mode = std::env::var("STORE").unwrap_or_else(|_| "aof".into());
+        match mode.as_str() {
+            "dragonfly" | "redis" | "kv" => {
+                let addr = std::env::var("DRAGONFLY_ADDR")
+                    .or_else(|_| std::env::var("KV_ADDR"))
+                    .unwrap_or_else(|_| "127.0.0.1:6379".into());
+                let cache = std::env::var("CACHE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(100_000usize);
+                let ttl = std::env::var("CACHE_TTL_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(5_000i64);
+                Store::open_kv(&addr, instance, cache, ttl)
+            }
+            _ => Store::new(dir, instance),
+        }
+    }
+
+    pub fn instance(&self) -> i32 {
+        match self {
+            Store::Local(s) => s.instance(),
+            Store::Kv(s) => s.instance(),
+        }
+    }
+    pub fn persistent(&self) -> bool {
+        match self {
+            Store::Local(s) => s.persistent(),
+            Store::Kv(s) => s.persistent(),
+        }
+    }
+    pub fn resolve(&self, code: &str) -> Option<Arc<str>> {
+        match self {
+            Store::Local(s) => s.resolve(code),
+            Store::Kv(s) => s.resolve(code),
+        }
+    }
+    pub fn shorten(&self, url: &str, alias: Option<&str>, ttl_ms: i64) -> Option<Box<str>> {
+        match self {
+            Store::Local(s) => s.shorten(url, alias, ttl_ms),
+            Store::Kv(s) => s.shorten(url, alias, ttl_ms),
+        }
+    }
+    pub fn shorten_many(&self, urls: &[String], ttl_ms: i64) -> Vec<Box<str>> {
+        match self {
+            Store::Local(s) => s.shorten_many(urls, ttl_ms),
+            Store::Kv(s) => s.shorten_many(urls, ttl_ms),
+        }
+    }
+    pub fn update(&self, code: &str, url: &str, ttl_ms: i64, has_ttl: bool) -> MutResult {
+        match self {
+            Store::Local(s) => s.update(code, url, ttl_ms, has_ttl),
+            Store::Kv(s) => s.update(code, url, ttl_ms, has_ttl),
+        }
+    }
+    pub fn remove(&self, code: &str) -> MutResult {
+        match self {
+            Store::Local(s) => s.remove(code),
+            Store::Kv(s) => s.remove(code),
+        }
+    }
+    pub fn list(&self, limit: usize, offset: usize, sort: &str, q: &str) -> (Vec<Link>, usize) {
+        match self {
+            Store::Local(s) => s.list(limit, offset, sort, q),
+            Store::Kv(s) => s.list(limit, offset, sort, q),
+        }
+    }
+    pub fn stats(&self, code: &str) -> Option<Link> {
+        match self {
+            Store::Local(s) => s.stats(code),
+            Store::Kv(s) => s.stats(code),
+        }
+    }
+    pub fn seed(&self, urls: &[String]) -> usize {
+        match self {
+            Store::Local(s) => s.seed(urls),
+            Store::Kv(s) => s.seed(urls),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Store::Local(s) => s.is_empty(),
+            Store::Kv(s) => s.is_empty(),
+        }
+    }
+    pub fn flush(&self) {
+        match self {
+            Store::Local(s) => s.flush(),
+            Store::Kv(s) => s.flush(),
+        }
+    }
+    pub fn poll_tails(&self) {
+        match self {
+            Store::Local(s) => s.poll_tails(),
+            Store::Kv(s) => s.poll_tails(),
+        }
+    }
+    pub fn compact(&self) {
+        match self {
+            Store::Local(s) => s.compact(),
+            Store::Kv(s) => s.compact(),
+        }
+    }
+    pub fn close(&self) {
+        match self {
+            Store::Local(s) => s.close(),
+            Store::Kv(s) => s.close(),
+        }
     }
 }

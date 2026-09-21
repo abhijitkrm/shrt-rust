@@ -43,10 +43,17 @@ struct Result_ {
 
 /// Parse one HTTP/1.1 response; returns the status code.
 /// lbuf/bbuf are caller-owned scratch — no allocation after warmup.
-fn read_resp(r: &mut BufReader<TcpStream>, lbuf: &mut String, bbuf: &mut Vec<u8>) -> std::io::Result<u16> {
+fn read_resp(
+    r: &mut BufReader<TcpStream>,
+    lbuf: &mut String,
+    bbuf: &mut Vec<u8>,
+) -> std::io::Result<u16> {
     lbuf.clear();
     if r.read_line(lbuf)? == 0 {
-        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "eof",
+        ));
     }
     let code: u16 = lbuf
         .split_whitespace()
@@ -270,14 +277,14 @@ fn post_req(path: &str, body: &str) -> Vec<u8> {
 }
 
 /// Create n aliased links via the API so the bench knows valid codes.
-fn make_codes(port: u16, n: usize) -> Vec<String> {
+fn make_codes(port: u16, n: usize, tag: &str) -> Vec<String> {
     let mut codes = Vec::with_capacity(n);
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     let mut br = BufReader::new(stream.try_clone().unwrap());
     let mut lbuf = String::with_capacity(256);
     let mut bbuf: Vec<u8> = Vec::with_capacity(1024);
     for i in 0..n {
-        let code = format!("bk{i}");
+        let code = format!("bk{tag}{i}");
         let body = format!("{{\"url\":\"https://bench.example/{i}\",\"alias\":\"{code}\"}}");
         stream.write_all(&post_req("/api/shorten", &body)).unwrap();
         let status = read_resp(&mut br, &mut lbuf, &mut bbuf).unwrap_or(0);
@@ -351,7 +358,7 @@ fn main() {
         );
         let envr: Vec<(&str, String)> = env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         let mut srv = start_server(&envr, &bin);
-        let codes = make_codes(port, 100);
+        let codes = make_codes(port, 100, "a");
         let reqs: Vec<Vec<u8>> = codes.iter().map(|c| get_req(&format!("/{c}"))).collect();
         let host = format!("127.0.0.1:{port}");
         report(
@@ -424,7 +431,7 @@ fn main() {
         );
         let envr: Vec<(&str, String)> = env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         let mut srv = start_server(&envr, &bin);
-        let codes = make_codes(port, 100);
+        let codes = make_codes(port, 100, "b");
         let reqs: Vec<Vec<u8>> = codes.iter().map(|c| get_req(&format!("/{c}"))).collect();
         let host = format!("127.0.0.1:{port}");
         report(
@@ -476,7 +483,7 @@ fn main() {
             ),
             BULK_N as f64,
         );
-        let codes = make_codes(port, 100);
+        let codes = make_codes(port, 100, "c");
         let reqs: Vec<Vec<u8>> = codes.iter().map(|c| get_req(&format!("/{c}"))).collect();
         // warm once so lazy tailing merges aliases across instances
         for c in &codes {

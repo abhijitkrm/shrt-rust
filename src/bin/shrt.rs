@@ -4,6 +4,10 @@
 //!   PORT        3000    base listen port
 //!   DATA_DIR    data    shard log directory (data-<i>.log, data-<i>.snap)
 //!   SERVER      mini    "mini" (custom engine) or "hyper" (hyper/tokio)
+//!   STORE       aof     "aof" in-process engine, or "dragonfly"/"redis" RESP KV
+//!   DRAGONFLY_ADDR 127.0.0.1:6379  RESP endpoint (or KV_ADDR)
+//!   CACHE       100000  bounded hot LRU entries over the KV (0 ~ tiny cache)
+//!   CACHE_TTL_MS 5000   staleness bound for cached entries
 //!   WORKERS     1       processes; all share PORT via SO_REUSEPORT
 //!   INSTANCE    auto    instance id (auto-claimed via instance-<i>.lock files)
 //!   SEED        0       bulk-insert N links if empty (random codes)
@@ -47,7 +51,7 @@ fn data_dir() -> String {
 
 /// Bulk-insert N links if the store is empty (through the write path).
 fn seed(n: usize) {
-    match Store::new(&data_dir(), 0) {
+    match Store::from_env(&data_dir(), 0) {
         Ok(s) => {
             if s.is_empty() {
                 let urls: Vec<String> =
@@ -118,7 +122,7 @@ fn listen(port: u16) -> io::Result<TcpListener> {
 }
 
 fn serve() {
-    let st = match Store::new(&data_dir(), env_int("INSTANCE", -1) as i32) {
+    let st = match Store::from_env(&data_dir(), env_int("INSTANCE", -1) as i32) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{e}");

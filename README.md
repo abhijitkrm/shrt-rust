@@ -30,6 +30,13 @@ High-performance URL shortener backend — Rust port of
   fsync'd every 500 ms — a process crash loses ≤5 ms of writes, a machine
   crash ≤~500 ms (tunable constants in `src/store.rs`; snapshot+truncate via
   `compact()`).
+* **External KV mode** (`STORE=dragonfly|redis`): the whole corpus lives in a
+  RESP-compatible store (DragonflyDB / Redis) instead of process memory — RAM
+  stays flat regardless of link count. Each node keeps only a **bounded FIFO
+  cache** (`CACHE` entries) + batched hit deltas (pipelined `INCRBY` every
+  5 ms). Keys: `l:{code}` → `"{exp}|{created}|{url}"` (`PX` self-evicts TTLs),
+  `h:{code}` → hit counter. No tailing/convergence — the KV is shared state,
+  so admin mutations work on any node.
 
 ## Quickstart
 
@@ -58,6 +65,14 @@ SERVER=hyper ./target/release/shrt       # hyper frontend
 `PORT` (3000) · `DATA_DIR` (`data`) · `WORKERS` (1) · `SERVER` (`mini`|`hyper`)
 · `SEED` (pre-generate N links at boot) · `ADMIN_TOKEN` · `CORS_ORIGIN` (`*`)
 · `LINK_TTL_MS` (86400000, capped at this value)
+· `STORE` (`aof`|`dragonfly`|`redis`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
+· `CACHE` (100000, bounded hot cache entries) · `CACHE_TTL_MS` (5000,
+staleness bound for cached entries)
+
+```sh
+STORE=dragonfly DRAGONFLY_ADDR=host:6379 CACHE=200000 ./target/release/shrt
+SHRT_KV_ADDR=127.0.0.1:6379 cargo test --test kv_test   # live KV tests
+```
 
 ## Bench
 
@@ -78,3 +93,8 @@ Measured on Apple Silicon (client+server colocated, 64 conns):
 | shorten | **~175k req/s** | ~158k | ~72k |
 | bulk ×1000 | **~4.1M rows/s** | ~2.1M | ~640k |
 | redirect ×4 workers | ~184k req/s | — | — |
+
+`STORE=dragonfly` (local Redis 8.2, same load): hot-cache reads are nearly
+free — ~197k redirect / ~430k pipelined / ~205k ×4 workers — while writes pay
+one round-trip (~65k shorten, ~486k rows/s bulk). Cold misses cost one
+`GET` (~50–100 µs); the corpus is unbounded by RAM.
