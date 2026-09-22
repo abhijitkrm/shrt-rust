@@ -779,6 +779,7 @@ impl Inner {
 pub enum Store {
     Local(LocalStore),
     Kv(Arc<crate::store_kv::KvStore>),
+    Rocks(Arc<crate::store_rocks::RocksStore>),
 }
 
 impl Store {
@@ -797,12 +798,37 @@ impl Store {
         crate::store_kv::KvStore::open(addr, instance, cache_entries, cache_ttl_ms).map(Store::Kv)
     }
 
-    /// Env-driven dispatch: STORE=aof|local (default) | dragonfly|redis|kv.
+    /// Embedded RocksDB backend — disk-native corpus, ~0 required RAM.
+    pub fn open_rocks(
+        path: &str,
+        instance: i32,
+        cache_entries: usize,
+        cache_ttl_ms: i64,
+    ) -> std::io::Result<Store> {
+        crate::store_rocks::RocksStore::open(path, instance, cache_entries, cache_ttl_ms)
+            .map(Store::Rocks)
+    }
+
+    /// Env-driven dispatch: STORE=aof|local (default) | dragonfly|redis|kv | rocksdb.
     /// KV_ADDR/DRAGONFLY_ADDR (default 127.0.0.1:6379), CACHE (default 100000),
     /// CACHE_TTL_MS (default 5000 — bounds cross-node staleness).
+    /// ROCKSDB_PATH (default {DATA_DIR}/rocksdb).
     pub fn from_env(dir: &str, instance: i32) -> std::io::Result<Store> {
         let mode = std::env::var("STORE").unwrap_or_else(|_| "aof".into());
         match mode.as_str() {
+            "rocksdb" | "rocks" => {
+                let path = std::env::var("ROCKSDB_PATH")
+                    .unwrap_or_else(|_| format!("{dir}/rocksdb"));
+                let cache = std::env::var("CACHE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(100_000usize);
+                let ttl = std::env::var("CACHE_TTL_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(5_000i64);
+                Store::open_rocks(&path, instance, cache, ttl)
+            }
             "dragonfly" | "redis" | "kv" => {
                 let addr = std::env::var("DRAGONFLY_ADDR")
                     .or_else(|_| std::env::var("KV_ADDR"))
@@ -825,90 +851,105 @@ impl Store {
         match self {
             Store::Local(s) => s.instance(),
             Store::Kv(s) => s.instance(),
+            Store::Rocks(s) => s.instance(),
         }
     }
     pub fn persistent(&self) -> bool {
         match self {
             Store::Local(s) => s.persistent(),
             Store::Kv(s) => s.persistent(),
+            Store::Rocks(s) => s.persistent(),
         }
     }
     pub fn resolve(&self, code: &str) -> Option<Arc<str>> {
         match self {
             Store::Local(s) => s.resolve(code),
             Store::Kv(s) => s.resolve(code),
+            Store::Rocks(s) => s.resolve(code),
         }
     }
     pub fn shorten(&self, url: &str, alias: Option<&str>, ttl_ms: i64) -> Option<Box<str>> {
         match self {
             Store::Local(s) => s.shorten(url, alias, ttl_ms),
             Store::Kv(s) => s.shorten(url, alias, ttl_ms),
+            Store::Rocks(s) => s.shorten(url, alias, ttl_ms),
         }
     }
     pub fn shorten_many(&self, urls: &[String], ttl_ms: i64) -> Vec<Box<str>> {
         match self {
             Store::Local(s) => s.shorten_many(urls, ttl_ms),
             Store::Kv(s) => s.shorten_many(urls, ttl_ms),
+            Store::Rocks(s) => s.shorten_many(urls, ttl_ms),
         }
     }
     pub fn update(&self, code: &str, url: &str, ttl_ms: i64, has_ttl: bool) -> MutResult {
         match self {
             Store::Local(s) => s.update(code, url, ttl_ms, has_ttl),
             Store::Kv(s) => s.update(code, url, ttl_ms, has_ttl),
+            Store::Rocks(s) => s.update(code, url, ttl_ms, has_ttl),
         }
     }
     pub fn remove(&self, code: &str) -> MutResult {
         match self {
             Store::Local(s) => s.remove(code),
             Store::Kv(s) => s.remove(code),
+            Store::Rocks(s) => s.remove(code),
         }
     }
     pub fn list(&self, limit: usize, offset: usize, sort: &str, q: &str) -> (Vec<Link>, usize) {
         match self {
             Store::Local(s) => s.list(limit, offset, sort, q),
             Store::Kv(s) => s.list(limit, offset, sort, q),
+            Store::Rocks(s) => s.list(limit, offset, sort, q),
         }
     }
     pub fn stats(&self, code: &str) -> Option<Link> {
         match self {
             Store::Local(s) => s.stats(code),
             Store::Kv(s) => s.stats(code),
+            Store::Rocks(s) => s.stats(code),
         }
     }
     pub fn seed(&self, urls: &[String]) -> usize {
         match self {
             Store::Local(s) => s.seed(urls),
             Store::Kv(s) => s.seed(urls),
+            Store::Rocks(s) => s.seed(urls),
         }
     }
     pub fn is_empty(&self) -> bool {
         match self {
             Store::Local(s) => s.is_empty(),
             Store::Kv(s) => s.is_empty(),
+            Store::Rocks(s) => s.is_empty(),
         }
     }
     pub fn flush(&self) {
         match self {
             Store::Local(s) => s.flush(),
             Store::Kv(s) => s.flush(),
+            Store::Rocks(s) => s.flush(),
         }
     }
     pub fn poll_tails(&self) {
         match self {
             Store::Local(s) => s.poll_tails(),
             Store::Kv(s) => s.poll_tails(),
+            Store::Rocks(s) => s.poll_tails(),
         }
     }
     pub fn compact(&self) {
         match self {
             Store::Local(s) => s.compact(),
             Store::Kv(s) => s.compact(),
+            Store::Rocks(s) => s.compact(),
         }
     }
     pub fn close(&self) {
         match self {
             Store::Local(s) => s.close(),
             Store::Kv(s) => s.close(),
+            Store::Rocks(s) => s.close(),
         }
     }
 }

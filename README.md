@@ -65,7 +65,12 @@ SERVER=hyper ./target/release/shrt       # hyper frontend
 `PORT` (3000) · `DATA_DIR` (`data`) · `WORKERS` (1) · `SERVER` (`mini`|`hyper`)
 · `SEED` (pre-generate N links at boot) · `ADMIN_TOKEN` · `CORS_ORIGIN` (`*`)
 · `LINK_TTL_MS` (86400000, capped at this value)
-· `STORE` (`aof`|`dragonfly`|`redis`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
+· `STORE` (`aof`|`dragonfly`|`redis`|`rocksdb`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
+· `ROCKSDB_PATH` (`{DATA_DIR}/rocksdb`) — `STORE=rocksdb` embeds RocksDB:
+disk-native corpus (~100B/link on disk), bloom-filter misses, hits via u64
+merge operands, expired keys dropped by a compaction filter (`SWEEP_MS`,
+1h, forces periodic compact). Single writer process per DB dir — for
+multi-instance/multi-node use the KV backend instead
 · `CACHE` (100000, bounded hot cache entries) · `CACHE_TTL_MS` (5000,
 staleness bound for cached entries)
 · `KV_LAYOUT` (`key`|`hash`) — `key`: `l:{code}` string keys with per-key

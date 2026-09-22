@@ -8,3 +8,4 @@ pub mod server_hyper;
 pub mod server_mini;
 pub mod store;
 pub mod store_kv;
+pub mod store_rocks;

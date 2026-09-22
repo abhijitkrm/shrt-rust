@@ -39,14 +39,15 @@ struct CacheShard {
 }
 
 /// Bounded segmented FIFO — fixed memory regardless of corpus size.
-struct Lru {
+pub(crate) struct Lru {
     shards: Box<[PlMutex<CacheShard>]>,
     cap_per_shard: usize,
     ttl_ms: i64, // 0 = entries never go stale in-cache (immutability still enforced on writes)
 }
 
 impl Lru {
-    fn new(cap: usize, ttl_ms: i64) -> Lru {
+
+    pub(crate) fn new(cap: usize, ttl_ms: i64) -> Lru {
         let mut v = Vec::with_capacity(NUM_SHARDS);
         for _ in 0..NUM_SHARDS {
             v.push(PlMutex::new(CacheShard {
@@ -61,7 +62,7 @@ impl Lru {
         }
     }
 
-    fn get(&self, code: &str) -> Option<(Arc<str>, i64)> {
+    pub(crate) fn get(&self, code: &str) -> Option<(Arc<str>, i64)> {
         let mut sh = self.shards[shard_of(code)].lock();
         let e = sh.map.get(code)?;
         if self.ttl_ms > 0 && now_ms() - e.at > self.ttl_ms {
@@ -75,7 +76,7 @@ impl Lru {
         Some((e.u.clone(), e.e))
     }
 
-    fn put(&self, code: &str, u: Arc<str>, e: i64) {
+    pub(crate) fn put(&self, code: &str, u: Arc<str>, e: i64) {
         let mut sh = self.shards[shard_of(code)].lock();
         if sh.map.contains_key(code) {
             if let Some(en) = sh.map.get_mut(code) {
@@ -97,7 +98,7 @@ impl Lru {
         sh.map.insert(k, CacheEntry { u, e, at: now_ms() });
     }
 
-    fn remove(&self, code: &str) {
+    pub(crate) fn remove(&self, code: &str) {
         let mut sh = self.shards[shard_of(code)].lock();
         sh.map.remove(code);
         sh.order.retain(|x| x.as_ref() != code);
@@ -154,7 +155,7 @@ fn bkey(code: &str, buckets: u32) -> Vec<u8> {
 
 /// Value codec: "{e}|{c}|{u}" — one byte pass, no JSON.
 /// (legacy "{e}|{u}" decodes with c=0)
-fn enc_val(e: i64, c: i64, u: &str) -> Vec<u8> {
+pub(crate) fn enc_val(e: i64, c: i64, u: &str) -> Vec<u8> {
     let mut v = e.to_string().into_bytes();
     v.push(b'|');
     v.extend_from_slice(c.to_string().as_bytes());
@@ -162,7 +163,7 @@ fn enc_val(e: i64, c: i64, u: &str) -> Vec<u8> {
     v.extend_from_slice(u.as_bytes());
     v
 }
-fn dec_val(v: &[u8]) -> Option<(i64, i64, &str)> {
+pub(crate) fn dec_val(v: &[u8]) -> Option<(i64, i64, &str)> {
     let p = v.iter().position(|b| *b == b'|')?;
     let e = std::str::from_utf8(&v[..p]).ok()?.parse().ok()?;
     let rest = &v[p + 1..];

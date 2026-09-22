@@ -18,6 +18,7 @@ name = "shrt-bench"
 path = "src/bin/bench.rs"
 
 [dependencies]
+rocksdb = "0.25"
 httparse = "1"
 socket2 = { version = "0.6", features = ["all"] }
 rustc-hash = "2"
