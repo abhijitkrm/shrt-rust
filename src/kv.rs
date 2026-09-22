@@ -139,6 +139,89 @@ impl Kv {
         Ok(())
     }
 
+    /// HGET — hash field read.
+    pub fn hget(&self, k: &[u8], f: &[u8]) -> std::io::Result<Option<Vec<u8>>> {
+        match self.cmd(&[b"HGET", k, f])? {
+            Resp::Bulk(b) => Ok(b),
+            _ => Ok(None),
+        }
+    }
+
+    /// HSET — returns true if the field was newly created.
+    pub fn hset(&self, k: &[u8], f: &[u8], v: &[u8]) -> std::io::Result<bool> {
+        match self.cmd(&[b"HSET", k, f, v])? {
+            Resp::Int(_) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// HSETNX — true only if the field did not exist.
+    pub fn hsetnx(&self, k: &[u8], f: &[u8], v: &[u8]) -> std::io::Result<bool> {
+        match self.cmd(&[b"HSETNX", k, f, v])? {
+            Resp::Int(n) => Ok(n == 1),
+            _ => Ok(false),
+        }
+    }
+
+    /// HDEL — fields removed.
+    pub fn hdel(&self, k: &[u8], f: &[u8]) -> std::io::Result<i64> {
+        match self.cmd(&[b"HDEL", k, f])? {
+            Resp::Int(n) => Ok(n),
+            _ => Ok(0),
+        }
+    }
+
+    /// Batched HINCRBY — one pipeline round-trip for all deltas.
+    /// deltas: (hash_key, field, delta)
+    pub fn hincrby_many(&self, deltas: &[(Vec<u8>, Vec<u8>, i64)]) -> std::io::Result<()> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+        let cmds: Vec<Vec<Vec<u8>>> = deltas
+            .iter()
+            .map(|(k, f, d)| {
+                vec![
+                    b"HINCRBY".to_vec(),
+                    k.clone(),
+                    f.clone(),
+                    d.to_string().into_bytes(),
+                ]
+            })
+            .collect();
+        self.pipe(&cmds)?;
+        Ok(())
+    }
+
+    /// HSCAN all fields of a hash; cb(field, value).
+    pub fn hscan_each(&self, key: &[u8], mut cb: impl FnMut(Vec<u8>, Vec<u8>)) -> std::io::Result<()> {
+        let mut cursor = b"0".to_vec();
+        loop {
+            match self.cmd(&[b"HSCAN", key, &cursor, b"COUNT", b"1000"])? {
+                Resp::Arr(a) if a.len() == 2 => {
+                    cursor = match &a[0] {
+                        Resp::Bulk(Some(b)) => b.clone(),
+                        Resp::Simple(s) => s.as_bytes().to_vec(),
+                        _ => break,
+                    };
+                    if let Resp::Arr(items) = &a[1] {
+                        for pair in items.as_chunks::<2>().0 {
+                            if let (Resp::Bulk(Some(f)), Resp::Bulk(Some(v))) =
+                                (&pair[0], &pair[1])
+                            {
+                                cb(f.clone(), v.clone());
+                            }
+                        }
+                    }
+                    if cursor == b"0" {
+                        return Ok(());
+                    }
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
     /// SCAN all keys matching `pat`, invoking cb per key. Admin path.
     pub fn scan_each(&self, pat: &str, mut cb: impl FnMut(Vec<u8>)) -> std::io::Result<()> {
         let mut cursor = b"0".to_vec();

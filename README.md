@@ -68,6 +68,17 @@ SERVER=hyper ./target/release/shrt       # hyper frontend
 · `STORE` (`aof`|`dragonfly`|`redis`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
 · `CACHE` (100000, bounded hot cache entries) · `CACHE_TTL_MS` (5000,
 staleness bound for cached entries)
+· `KV_LAYOUT` (`key`|`hash`) — `key`: `l:{code}` string keys with per-key
+`PX` expiry. `hash`: links packed as fields in `l:{code % KV_BUCKETS}` hashes
+(~40% less KV memory at ~105B values); expiry is enforced on read and a
+janitor reaps dead fields every `KV_SWEEP_MS` (1h)
+· `KV_BUCKETS` (1000000) — keep fields/bucket under the server's
+`hash-max-listpack-entries` (512 on Redis 8) so buckets stay listpack-packed
+· `KV_SWEEP_MS` (3600000) — janitor interval for hash layout
+
+Hash-layout memory win needs the server's `hash-max-listpack-value` above the
+stored value size (~105B): `CONFIG SET hash-max-listpack-value 256` —
+otherwise buckets convert to hashtable encoding and savings drop to ~7%.
 
 ```sh
 STORE=dragonfly DRAGONFLY_ADDR=host:6379 CACHE=200000 ./target/release/shrt
