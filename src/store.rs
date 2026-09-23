@@ -552,6 +552,11 @@ impl LocalStore {
         }
     }
 
+    /// In-process engine is always healthy — it IS this process.
+    pub fn healthy(&self) -> bool {
+        true
+    }
+
     pub fn is_empty(&self) -> bool {
         self.inner.shards.iter().all(|sh| sh.data.read().is_empty())
     }
@@ -817,8 +822,8 @@ impl Store {
         let mode = std::env::var("STORE").unwrap_or_else(|_| "aof".into());
         match mode.as_str() {
             "rocksdb" | "rocks" => {
-                let path = std::env::var("ROCKSDB_PATH")
-                    .unwrap_or_else(|_| format!("{dir}/rocksdb"));
+                let path =
+                    std::env::var("ROCKSDB_PATH").unwrap_or_else(|_| format!("{dir}/rocksdb"));
                 let cache = std::env::var("CACHE")
                     .ok()
                     .and_then(|v| v.parse().ok())
@@ -869,18 +874,24 @@ impl Store {
         }
     }
     pub fn shorten(&self, url: &str, alias: Option<&str>, ttl_ms: i64) -> Option<Box<str>> {
-        match self {
+        let r = match self {
             Store::Local(s) => s.shorten(url, alias, ttl_ms),
             Store::Kv(s) => s.shorten(url, alias, ttl_ms),
             Store::Rocks(s) => s.shorten(url, alias, ttl_ms),
+        };
+        if r.is_some() {
+            crate::metrics::links_delta(1);
         }
+        r
     }
     pub fn shorten_many(&self, urls: &[String], ttl_ms: i64) -> Vec<Box<str>> {
-        match self {
+        let r = match self {
             Store::Local(s) => s.shorten_many(urls, ttl_ms),
             Store::Kv(s) => s.shorten_many(urls, ttl_ms),
             Store::Rocks(s) => s.shorten_many(urls, ttl_ms),
-        }
+        };
+        crate::metrics::links_delta(r.len() as i64);
+        r
     }
     pub fn update(&self, code: &str, url: &str, ttl_ms: i64, has_ttl: bool) -> MutResult {
         match self {
@@ -890,11 +901,15 @@ impl Store {
         }
     }
     pub fn remove(&self, code: &str) -> MutResult {
-        match self {
+        let r = match self {
             Store::Local(s) => s.remove(code),
             Store::Kv(s) => s.remove(code),
             Store::Rocks(s) => s.remove(code),
+        };
+        if matches!(r, MutResult::Ok) {
+            crate::metrics::links_delta(-1);
         }
+        r
     }
     pub fn list(&self, limit: usize, offset: usize, sort: &str, q: &str) -> (Vec<Link>, usize) {
         match self {
@@ -917,6 +932,15 @@ impl Store {
             Store::Rocks(s) => s.seed(urls),
         }
     }
+    /// /api/health probe: proves the backing store answers.
+    pub fn healthy(&self) -> bool {
+        match self {
+            Store::Local(s) => s.healthy(),
+            Store::Kv(s) => s.healthy(),
+            Store::Rocks(s) => s.healthy(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         match self {
             Store::Local(s) => s.is_empty(),

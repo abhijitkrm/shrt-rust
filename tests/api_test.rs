@@ -146,6 +146,35 @@ fn metrics() {
 }
 
 #[test]
+fn prometheus_metrics() {
+    run_suite(|port| {
+        shorten(port, "https://prom.example");
+        let r = get(port, "/metrics");
+        assert_eq!(r.status, 200);
+        assert_eq!(
+            r.header("content-type").unwrap(),
+            "text/plain; version=0.0.4"
+        );
+        let body = String::from_utf8_lossy(&r.body);
+        assert!(
+            body.contains("# TYPE shrt_requests_total counter"),
+            "{body}"
+        );
+        assert!(
+            body.contains("shrt_requests_total{op=\"shorten\"}"),
+            "{body}"
+        );
+        assert!(
+            body.contains("shrt_cache_lookups_total{result=\"miss\"}"),
+            "{body}"
+        );
+        assert!(body.contains("shrt_links_total"), "{body}");
+        assert!(body.contains("shrt_uptime_seconds"), "{body}");
+        assert!(body.contains("shrt_rate_limited_total"), "{body}");
+    });
+}
+
+#[test]
 fn ui_served() {
     run_suite(|port| {
         let r = get(port, "/");
@@ -365,6 +394,17 @@ fn admin_mutations() {
 
         let r = req(port, "DELETE", &format!("/api/links/{code}"), &[], None);
         assert_eq!(r.status, 404, "delete without token {}", r.status);
+
+        // empty ADMIN_TOKEN must also fail closed
+        std::env::set_var("ADMIN_TOKEN", "");
+        let r0 = req(
+            port,
+            "DELETE",
+            &format!("/api/links/{code}"),
+            &[("x-admin-token", "")],
+            None,
+        );
+        assert_eq!(r0.status, 404, "delete empty token {}", r0.status);
 
         std::env::set_var("ADMIN_TOKEN", "secret");
 

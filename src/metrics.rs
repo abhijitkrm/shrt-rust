@@ -16,6 +16,75 @@ static CUR: AtomicI64 = AtomicI64::new(0);
 static TOTAL: AtomicI64 = AtomicI64::new(0);
 static STARTED: AtomicI64 = AtomicI64::new(0);
 
+// ---- counters for the Prometheus /metrics endpoint ----
+// ops: redirect, shorten, shorten_bulk, update, delete, list, stats,
+// health, metrics, ui, other; plus cache hit/miss and rate-limited.
+pub const OPS: [&str; 11] = [
+    "redirect",
+    "shorten",
+    "shorten_bulk",
+    "update",
+    "delete",
+    "list",
+    "stats",
+    "health",
+    "metrics",
+    "ui",
+    "other",
+];
+#[allow(clippy::declare_interior_mutable_const)]
+static OP_COUNTS: [AtomicI64; 11] = {
+    const Z: AtomicI64 = AtomicI64::new(0);
+    [Z; 11]
+};
+#[allow(clippy::declare_interior_mutable_const)]
+static STATUS: [AtomicI64; 4] = {
+    const Z: AtomicI64 = AtomicI64::new(0);
+    [Z; 4]
+}; // 2xx 3xx 4xx 5xx
+static CACHE_HIT: AtomicI64 = AtomicI64::new(0);
+static CACHE_MISS: AtomicI64 = AtomicI64::new(0);
+static STORE_READS: AtomicI64 = AtomicI64::new(0);
+static STORE_READ_US: AtomicI64 = AtomicI64::new(0);
+static STORE_WRITES: AtomicI64 = AtomicI64::new(0);
+static LINKS_TOTAL: AtomicI64 = AtomicI64::new(0);
+
+#[inline]
+pub fn op(i: usize) {
+    OP_COUNTS[i].fetch_add(1, Ordering::Relaxed);
+}
+#[inline]
+pub fn status(code: u16) {
+    let i = match code {
+        200..=299 => 0,
+        300..=399 => 1,
+        400..=499 => 2,
+        _ => 3,
+    };
+    STATUS[i].fetch_add(1, Ordering::Relaxed);
+}
+#[inline]
+pub fn cache_hit() {
+    CACHE_HIT.fetch_add(1, Ordering::Relaxed);
+}
+#[inline]
+pub fn cache_miss() {
+    CACHE_MISS.fetch_add(1, Ordering::Relaxed);
+}
+#[inline]
+pub fn store_read(us: i64) {
+    STORE_READS.fetch_add(1, Ordering::Relaxed);
+    STORE_READ_US.fetch_add(us, Ordering::Relaxed);
+}
+#[inline]
+pub fn store_write() {
+    STORE_WRITES.fetch_add(1, Ordering::Relaxed);
+}
+#[inline]
+pub fn links_delta(n: i64) {
+    LINKS_TOTAL.fetch_add(n, Ordering::Relaxed);
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -86,5 +155,109 @@ pub fn snapshot() -> Vec<u8> {
         b.extend_from_slice(v.to_string().as_bytes());
     }
     b.extend_from_slice(b"]}");
+    b
+}
+
+/// Prometheus text exposition — /metrics endpoint.
+fn pline(b: &mut Vec<u8>, m: &str, labels: &str, v: i64) {
+    b.extend_from_slice(m.as_bytes());
+    if !labels.is_empty() {
+        b.push(b'{');
+        b.extend_from_slice(labels.as_bytes());
+        b.push(b'}');
+    }
+    b.push(b' ');
+    b.extend_from_slice(v.to_string().as_bytes());
+    b.push(b'\n');
+}
+
+pub fn prometheus() -> Vec<u8> {
+    let mut b = Vec::with_capacity(1024);
+    b.extend_from_slice(b"# HELP shrt_requests_total Requests by operation\n");
+    b.extend_from_slice(b"# TYPE shrt_requests_total counter\n");
+    for (i, name) in OPS.iter().enumerate() {
+        pline(
+            &mut b,
+            "shrt_requests_total",
+            &format!("op=\"{name}\""),
+            OP_COUNTS[i].load(Ordering::Relaxed),
+        );
+    }
+    b.extend_from_slice(b"# HELP shrt_responses_total Responses by status class\n");
+    b.extend_from_slice(b"# TYPE shrt_responses_total counter\n");
+    for (i, cls) in ["2xx", "3xx", "4xx", "5xx"].iter().enumerate() {
+        pline(
+            &mut b,
+            "shrt_responses_total",
+            &format!("class=\"{cls}\""),
+            STATUS[i].load(Ordering::Relaxed),
+        );
+    }
+    b.extend_from_slice(b"# HELP shrt_cache_lookups_total Local hot-cache lookups\n");
+    b.extend_from_slice(b"# TYPE shrt_cache_lookups_total counter\n");
+    pline(
+        &mut b,
+        "shrt_cache_lookups_total",
+        "result=\"hit\"",
+        CACHE_HIT.load(Ordering::Relaxed),
+    );
+    pline(
+        &mut b,
+        "shrt_cache_lookups_total",
+        "result=\"miss\"",
+        CACHE_MISS.load(Ordering::Relaxed),
+    );
+    b.extend_from_slice(
+        b"# HELP shrt_store_reads_total Backing-store point reads (cache misses)\n",
+    );
+    b.extend_from_slice(b"# TYPE shrt_store_reads_total counter\n");
+    pline(
+        &mut b,
+        "shrt_store_reads_total",
+        "",
+        STORE_READS.load(Ordering::Relaxed),
+    );
+    b.extend_from_slice(
+        b"# HELP shrt_store_read_us_total Cumulative backing-store read latency (us)\n",
+    );
+    b.extend_from_slice(b"# TYPE shrt_store_read_us_total counter\n");
+    pline(
+        &mut b,
+        "shrt_store_read_us_total",
+        "",
+        STORE_READ_US.load(Ordering::Relaxed),
+    );
+    b.extend_from_slice(b"# HELP shrt_store_writes_total Backing-store writes\n");
+    b.extend_from_slice(b"# TYPE shrt_store_writes_total counter\n");
+    pline(
+        &mut b,
+        "shrt_store_writes_total",
+        "",
+        STORE_WRITES.load(Ordering::Relaxed),
+    );
+    b.extend_from_slice(b"# HELP shrt_rate_limited_total Requests rejected by the rate limiter\n");
+    b.extend_from_slice(b"# TYPE shrt_rate_limited_total counter\n");
+    pline(
+        &mut b,
+        "shrt_rate_limited_total",
+        "",
+        crate::ratelimit::LIMITED.load(Ordering::Relaxed) as i64,
+    );
+    b.extend_from_slice(b"# HELP shrt_links_total Live links created minus deleted\n");
+    b.extend_from_slice(b"# TYPE shrt_links_total gauge\n");
+    pline(
+        &mut b,
+        "shrt_links_total",
+        "",
+        LINKS_TOTAL.load(Ordering::Relaxed),
+    );
+    b.extend_from_slice(b"# HELP shrt_uptime_seconds Process uptime\n");
+    b.extend_from_slice(b"# TYPE shrt_uptime_seconds gauge\n");
+    pline(
+        &mut b,
+        "shrt_uptime_seconds",
+        "",
+        (now_ms() - STARTED.load(Ordering::Relaxed)) / 1000,
+    );
     b
 }

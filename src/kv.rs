@@ -193,7 +193,11 @@ impl Kv {
     }
 
     /// HSCAN all fields of a hash; cb(field, value).
-    pub fn hscan_each(&self, key: &[u8], mut cb: impl FnMut(Vec<u8>, Vec<u8>)) -> std::io::Result<()> {
+    pub fn hscan_each(
+        &self,
+        key: &[u8],
+        mut cb: impl FnMut(Vec<u8>, Vec<u8>),
+    ) -> std::io::Result<()> {
         let mut cursor = b"0".to_vec();
         loop {
             match self.cmd(&[b"HSCAN", key, &cursor, b"COUNT", b"1000"])? {
@@ -205,8 +209,7 @@ impl Kv {
                     };
                     if let Resp::Arr(items) = &a[1] {
                         for pair in items.as_chunks::<2>().0 {
-                            if let (Resp::Bulk(Some(f)), Resp::Bulk(Some(v))) =
-                                (&pair[0], &pair[1])
+                            if let (Resp::Bulk(Some(f)), Resp::Bulk(Some(v))) = (&pair[0], &pair[1])
                             {
                                 cb(f.clone(), v.clone());
                             }

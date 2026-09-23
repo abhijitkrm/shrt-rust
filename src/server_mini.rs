@@ -23,6 +23,8 @@ fn status_line(code: u16) -> &'static str {
         404 => "HTTP/1.1 404 Not Found\r\n",
         409 => "HTTP/1.1 409 Conflict\r\n",
         413 => "HTTP/1.1 413 Content Too Large\r\n",
+        429 => "HTTP/1.1 429 Too Many Requests\r\n",
+        503 => "HTTP/1.1 503 Service Unavailable\r\n",
         _ => "HTTP/1.1 500 Internal Server Error\r\n",
     }
 }
@@ -88,6 +90,11 @@ pub fn serve(listener: TcpListener, store: Store) -> std::io::Result<()> {
 
 fn handle_conn(mut stream: TcpStream, st: Arc<Store>) -> std::io::Result<()> {
     let _ = stream.set_nodelay(true);
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
+    let trust_proxy = std::env::var_os("TRUST_PROXY").is_some();
     let mut buf: Vec<u8> = Vec::with_capacity(READ_CAP_INIT);
     let mut out: Vec<u8> = Vec::with_capacity(READ_CAP_INIT);
     let mut parsed_off = 0usize;
@@ -165,7 +172,17 @@ fn handle_conn(mut stream: TcpStream, st: Arc<Store>) -> std::io::Result<()> {
             } else {
                 &[]
             };
-            let reply = app::handle(&st, method, path, body, admin);
+            let client = if trust_proxy {
+                header_val(&req, "x-forwarded-for")
+                    .and_then(|v| std::str::from_utf8(v).ok())
+                    .and_then(|v| v.split(',').next())
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or(&peer)
+            } else {
+                &peer
+            };
+            let reply = app::handle(&st, method, path, body, admin, client);
             write_reply(&mut out, &reply);
             parsed_off += total;
             if !alive {

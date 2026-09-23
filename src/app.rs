@@ -190,8 +190,30 @@ struct PatchReq {
 // ---------- handler ----------
 
 /// The transport-agnostic request handler. `path` includes the query string
-/// ("...?..."); `body` is the raw request body (empty when absent).
-pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &str) -> Reply {
+/// ("...?..."); `body` is the raw request body (empty when absent);
+/// `client` is the peer IP (or X-Forwarded-For when TRUST_PROXY=1) used for
+/// RATE_LIMIT accounting.
+pub fn handle(
+    st: &Store,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    admin_token: &str,
+    client: &str,
+) -> Reply {
+    let r = route(st, method, path, body, admin_token, client);
+    metrics::status(r.status);
+    r
+}
+
+fn route(
+    st: &Store,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    admin_token: &str,
+    client: &str,
+) -> Reply {
     let (pathname, query) = match path.find('?') {
         Some(i) => (&path[..i], &path[i + 1..]),
         None => (path, ""),
@@ -211,12 +233,28 @@ pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &s
     match method {
         "GET" => {
             if pathname == "/api/health" {
-                return Reply::new(200, "{\"ok\":true}");
+                metrics::op(7);
+                return if st.healthy() {
+                    Reply::new(200, "{\"ok\":true}")
+                } else {
+                    Reply::new(503, "{\"ok\":false}")
+                };
             }
             if pathname == "/api/metrics" {
+                metrics::op(8);
                 return Reply::new(200, metrics::snapshot());
             }
+            if pathname == "/metrics" {
+                metrics::op(8);
+                return Reply {
+                    status: 200,
+                    location: None,
+                    body: metrics::prometheus(),
+                    ctype: Some("text/plain; version=0.0.4"),
+                };
+            }
             if pathname == "/" {
+                metrics::op(9);
                 return match ui_html() {
                     Some(html) => Reply {
                         status: 200,
@@ -228,6 +266,7 @@ pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &s
                 };
             }
             if pathname == "/api/links" {
+                metrics::op(5);
                 let p = url::form_urlencoded::parse(query.as_bytes())
                     .into_owned()
                     .collect::<std::collections::HashMap<String, String>>();
@@ -270,6 +309,7 @@ pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &s
                 );
             }
             if let Some(code) = pathname.strip_prefix("/api/stats/") {
+                metrics::op(6);
                 return match st.stats(code) {
                     Some(link) => Reply::new(200, sonic_rs::to_vec(&link).unwrap_or_default()),
                     None => not_found(),
@@ -277,6 +317,7 @@ pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &s
             }
             let code = &pathname[1..];
             if code_ok(code) {
+                metrics::op(0);
                 if let Some(target) = st.resolve(code) {
                     return Reply {
                         status: 302,
@@ -290,18 +331,34 @@ pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &s
         }
         "POST" => {
             if pathname != "/api/shorten" && pathname != "/api/shorten/bulk" {
+                metrics::op(10);
                 return not_found();
             }
             if pathname == "/api/shorten" {
-                return match sonic_rs::from_slice::<ShortenReq>(body) {
-                    Ok(p) => shorten_one(st, &p),
-                    Err(_) => bad("invalid json"),
+                let p = match sonic_rs::from_slice::<ShortenReq>(body) {
+                    Ok(p) => p,
+                    Err(_) => return bad("invalid json"),
                 };
+                if !crate::ratelimit::limiter().allow(client, 1.0) {
+                    crate::ratelimit::LIMITED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metrics::op(10);
+                    return Reply::new(429, "{\"error\":\"rate limited\"}");
+                }
+                metrics::op(1);
+                return shorten_one(st, &p);
             }
-            match sonic_rs::from_slice::<BulkReq>(body) {
-                Ok(p) => shorten_bulk(st, &p),
-                Err(_) => bad("invalid json"),
+            let p = match sonic_rs::from_slice::<BulkReq>(body) {
+                Ok(p) => p,
+                Err(_) => return bad("invalid json"),
+            };
+            let cost = p.urls.as_deref().unwrap_or(&[]).len().max(1) as f64;
+            if !crate::ratelimit::limiter().allow(client, cost) {
+                crate::ratelimit::LIMITED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                metrics::op(10);
+                return Reply::new(429, "{\"error\":\"rate limited\"}");
             }
+            metrics::op(2);
+            shorten_bulk(st, &p)
         }
         "PATCH" | "DELETE" => {
             if !pathname.starts_with("/api/links/") || !admin_ok(admin_token) {
@@ -312,6 +369,7 @@ pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &s
                 return bad("invalid code");
             }
             if method == "DELETE" {
+                metrics::op(4);
                 return match st.remove(code) {
                     MutResult::Ok => Reply {
                         status: 204,
@@ -337,6 +395,7 @@ pub fn handle(st: &Store, method: &str, path: &str, body: &[u8], admin_token: &s
                     Some(t) => ((t as i64).min(link_ttl_ms()), true),
                     None => (0, false),
                 };
+                metrics::op(3);
                 return match st.update(code, u, ttl, has_ttl) {
                     MutResult::Ok => Reply::new(200, "{\"ok\":true}"),
                     MutResult::Missing => not_found(),

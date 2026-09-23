@@ -57,7 +57,9 @@ SERVER=hyper ./target/release/shrt       # hyper frontend
 | `/api/stats/:code` | GET | `{"code","url","hits","created_at","expires_at"}` |
 | `/api/links` | GET | `?limit&offset&sort=hits|created&q` (admin list) |
 | `/api/links/:code` | PATCH/DELETE | requires `ADMIN_TOKEN` + `x-admin-token` header |
-| `/api/health` `/api/metrics` | GET | health / request counters |
+| `/api/health` | GET | 200 only when the store answers (`PING` for KV, probe for rocksdb) — else 503 |
+| `/api/metrics` | GET | JSON request counters |
+| `/metrics` | GET | Prometheus text exposition |
 | `/` | GET | built-in UI (`ui/index.html`) |
 
 ## Config (env)
@@ -65,6 +67,13 @@ SERVER=hyper ./target/release/shrt       # hyper frontend
 `PORT` (3000) · `DATA_DIR` (`data`) · `WORKERS` (1) · `SERVER` (`mini`|`hyper`)
 · `SEED` (pre-generate N links at boot) · `ADMIN_TOKEN` · `CORS_ORIGIN` (`*`)
 · `LINK_TTL_MS` (86400000, capped at this value)
+· `RATE_LIMIT` (0 = off) — per-IP token bucket, req/s on `POST /api/shorten`
+(cost 1) and `/api/shorten/bulk` (cost = urls count); 429 when empty.
+`RATE_LIMIT_BURST` (default = RATE_LIMIT) sets bucket capacity
+· `TRUST_PROXY` (off) — when set, rate-limit keys come from the first
+`X-Forwarded-For` address instead of the TCP peer
+· `ADMIN_TOKEN` — unset or empty means PATCH/DELETE are always 404
+(fail-closed; there is no open-admin mode)
 · `STORE` (`aof`|`dragonfly`|`redis`|`rocksdb`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
 · `ROCKSDB_PATH` (`{DATA_DIR}/rocksdb`) — `STORE=rocksdb` embeds RocksDB:
 disk-native corpus (~100B/link on disk), bloom-filter misses, hits via u64

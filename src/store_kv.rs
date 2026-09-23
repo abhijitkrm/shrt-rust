@@ -46,7 +46,6 @@ pub(crate) struct Lru {
 }
 
 impl Lru {
-
     pub(crate) fn new(cap: usize, ttl_ms: i64) -> Lru {
         let mut v = Vec::with_capacity(NUM_SHARDS);
         for _ in 0..NUM_SHARDS {
@@ -153,10 +152,12 @@ fn bkey(code: &str, buckets: u32) -> Vec<u8> {
     k
 }
 
-/// Value codec: "{e}|{c}|{u}" — one byte pass, no JSON.
-/// (legacy "{e}|{u}" decodes with c=0)
+/// Value codec: "v1|{e}|{c}|{u}" — one byte pass, no JSON. The version
+/// tag lets future schema changes decode old corpora; legacy "{e}|{c}|{u}"
+/// and "{e}|{u}" decode with c=0.
 pub(crate) fn enc_val(e: i64, c: i64, u: &str) -> Vec<u8> {
-    let mut v = e.to_string().into_bytes();
+    let mut v = b"v1|".to_vec();
+    v.extend_from_slice(e.to_string().as_bytes());
     v.push(b'|');
     v.extend_from_slice(c.to_string().as_bytes());
     v.push(b'|');
@@ -164,6 +165,7 @@ pub(crate) fn enc_val(e: i64, c: i64, u: &str) -> Vec<u8> {
     v
 }
 pub(crate) fn dec_val(v: &[u8]) -> Option<(i64, i64, &str)> {
+    let v = if v.starts_with(b"v1|") { &v[3..] } else { v };
     let p = v.iter().position(|b| *b == b'|')?;
     let e = std::str::from_utf8(&v[..p]).ok()?.parse().ok()?;
     let rest = &v[p + 1..];
@@ -333,10 +335,14 @@ impl KvStore {
 
     pub fn resolve(&self, code: &str) -> Option<Arc<str>> {
         if let Some((u, _)) = self.cache.get(code) {
+            crate::metrics::cache_hit();
             self.bump(code);
             return Some(u);
         }
+        crate::metrics::cache_miss();
+        let t0 = std::time::Instant::now();
         let v = self.kv_get(code).ok()??;
+        crate::metrics::store_read(t0.elapsed().as_micros() as i64);
         let (e, _, u) = dec_val(&v)?;
         if e != 0 && e <= now_ms() {
             return None;
@@ -350,17 +356,18 @@ impl KvStore {
     /// SET NX for alias; plain SET after gen for random codes (retry on the
     /// astronomically unlikely NX fail).
     pub fn shorten(&self, url: &str, alias: Option<&str>, ttl_ms: i64) -> Option<Box<str>> {
+        crate::metrics::store_write();
         let now = now_ms();
         let exp = if ttl_ms > 0 { now + ttl_ms } else { 0 };
         match alias {
             Some(a) => {
                 let ok = match self.layout {
-                    Layout::Hash => self
-                        .kv
-                        .hsetnx(&bkey(a, self.buckets), a.as_bytes(), &enc_val(exp, now, url)),
-                    Layout::Key => {
-                        self.kv.set(&lkey(a), &enc_val(exp, now, url), ttl_ms, true)
-                    }
+                    Layout::Hash => self.kv.hsetnx(
+                        &bkey(a, self.buckets),
+                        a.as_bytes(),
+                        &enc_val(exp, now, url),
+                    ),
+                    Layout::Key => self.kv.set(&lkey(a), &enc_val(exp, now, url), ttl_ms, true),
                 }
                 .ok()?;
                 if ok {
@@ -372,12 +379,14 @@ impl KvStore {
             None => loop {
                 let c = self.gen_code();
                 let ok = match self.layout {
-                    Layout::Hash => self
+                    Layout::Hash => self.kv.hsetnx(
+                        &bkey(&c, self.buckets),
+                        c.as_bytes(),
+                        &enc_val(exp, now, url),
+                    ),
+                    Layout::Key => self
                         .kv
-                        .hsetnx(&bkey(&c, self.buckets), c.as_bytes(), &enc_val(exp, now, url)),
-                    Layout::Key => {
-                        self.kv.set(&lkey(&c), &enc_val(exp, now, url), ttl_ms, true)
-                    }
+                        .set(&lkey(&c), &enc_val(exp, now, url), ttl_ms, true),
                 }
                 .unwrap_or(false);
                 if ok {
@@ -453,7 +462,11 @@ impl KvStore {
         let ok = match self.layout {
             Layout::Hash => self
                 .kv
-                .hset(&bkey(code, self.buckets), code.as_bytes(), &enc_val(exp, c, url))
+                .hset(
+                    &bkey(code, self.buckets),
+                    code.as_bytes(),
+                    &enc_val(exp, c, url),
+                )
                 .unwrap_or(false),
             Layout::Key => self
                 .kv
@@ -537,49 +550,49 @@ impl KvStore {
                 it.hits = hits.get(&it.code).copied().unwrap_or(0);
             }
         } else {
-        let mut keys: Vec<Vec<u8>> = Vec::new();
-        let _ = self.kv.scan_each("l:*", |k| keys.push(k));
-        // one pipeline round-trip: GET l:k and GET h:k for every key
-        let cmds: Vec<Vec<Vec<u8>>> = keys
-            .iter()
-            .flat_map(|k| {
-                let code = &k[2..];
-                [
-                    vec![b"GET".to_vec(), k.clone()],
-                    vec![
-                        b"GET".to_vec(),
-                        hkey(std::str::from_utf8(code).unwrap_or("")),
-                    ],
-                ]
-            })
-            .collect();
-        let rs = self.kv.pipe(&cmds).unwrap_or_default();
-        for (i, k) in keys.iter().enumerate() {
-            let code = String::from_utf8_lossy(&k[2..]).to_string();
-            let Some(crate::kv::Resp::Bulk(Some(v))) = rs.get(2 * i) else {
-                continue;
-            };
-            let Some((e, c, u)) = dec_val(v) else {
-                continue;
-            };
-            if !q.is_empty() && !code.contains(q) && !u.contains(q) {
-                continue;
+            let mut keys: Vec<Vec<u8>> = Vec::new();
+            let _ = self.kv.scan_each("l:*", |k| keys.push(k));
+            // one pipeline round-trip: GET l:k and GET h:k for every key
+            let cmds: Vec<Vec<Vec<u8>>> = keys
+                .iter()
+                .flat_map(|k| {
+                    let code = &k[2..];
+                    [
+                        vec![b"GET".to_vec(), k.clone()],
+                        vec![
+                            b"GET".to_vec(),
+                            hkey(std::str::from_utf8(code).unwrap_or("")),
+                        ],
+                    ]
+                })
+                .collect();
+            let rs = self.kv.pipe(&cmds).unwrap_or_default();
+            for (i, k) in keys.iter().enumerate() {
+                let code = String::from_utf8_lossy(&k[2..]).to_string();
+                let Some(crate::kv::Resp::Bulk(Some(v))) = rs.get(2 * i) else {
+                    continue;
+                };
+                let Some((e, c, u)) = dec_val(v) else {
+                    continue;
+                };
+                if !q.is_empty() && !code.contains(q) && !u.contains(q) {
+                    continue;
+                }
+                let hits = match rs.get(2 * i + 1) {
+                    Some(crate::kv::Resp::Bulk(Some(h))) => std::str::from_utf8(h)
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                items.push(Link {
+                    code,
+                    url: u.to_string(),
+                    hits,
+                    created_at: c,
+                    expires_at: if e != 0 { Some(e) } else { None },
+                });
             }
-            let hits = match rs.get(2 * i + 1) {
-                Some(crate::kv::Resp::Bulk(Some(h))) => std::str::from_utf8(h)
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0),
-                _ => 0,
-            };
-            items.push(Link {
-                code,
-                url: u.to_string(),
-                hits,
-                created_at: c,
-                expires_at: if e != 0 { Some(e) } else { None },
-            });
-        }
         }
         if sort == "hits" {
             items.sort_by_key(|x| std::cmp::Reverse(x.hits));
@@ -644,6 +657,11 @@ impl KvStore {
         urls.len()
     }
 
+    /// /api/health probe: a PING round-trip proves the RESP link is alive.
+    pub fn healthy(&self) -> bool {
+        matches!(self.kv.cmd(&[b"PING"]), Ok(crate::kv::Resp::Simple(ref s)) if s == "PONG")
+    }
+
     pub fn is_empty(&self) -> bool {
         let mut any = false;
         let _ = self.kv.scan_each("l:*", |_| any = true);
@@ -677,5 +695,39 @@ impl Drop for KvStore {
             self.stop.store(true, Ordering::Relaxed);
             let _ = self.flush_hits();
         }
+    }
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::{dec_val, enc_val};
+
+    #[test]
+    fn v1_roundtrip() {
+        let v = enc_val(111, 222, "https://x.example/a|b");
+        assert!(v.starts_with(b"v1|"));
+        assert_eq!(dec_val(&v), Some((111, 222, "https://x.example/a|b")));
+    }
+
+    #[test]
+    fn decodes_legacy_formats() {
+        // pre-version "{e}|{c}|{u}"
+        assert_eq!(
+            dec_val(b"111|222|https://x.example"),
+            Some((111, 222, "https://x.example"))
+        );
+        // oldest "{e}|{u}"
+        assert_eq!(
+            dec_val(b"111|https://x.example"),
+            Some((111, 0, "https://x.example"))
+        );
+        // versioned with url containing '|'
+        assert_eq!(
+            dec_val(b"v1|0|5|https://x.example?a|b"),
+            Some((0, 5, "https://x.example?a|b"))
+        );
+        assert_eq!(dec_val(b""), None);
+        assert_eq!(dec_val(b"v1|"), None);
+        assert_eq!(dec_val(b"abc"), None);
     }
 }

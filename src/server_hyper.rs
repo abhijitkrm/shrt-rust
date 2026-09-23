@@ -47,9 +47,15 @@ async fn serve_conn(
     stream: tokio::net::TcpStream,
     st: Store,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
+    let trust_proxy = std::env::var_os("TRUST_PROXY").is_some();
     let io = TokioIo::new(stream);
     let svc = service_fn(move |req: Request<hyper::body::Incoming>| {
         let st = st.clone();
+        let peer = peer.clone();
         async move {
             let method = req.method().as_str().to_string();
             let path = req
@@ -64,6 +70,17 @@ async fn serve_conn(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
+            let client = if trust_proxy {
+                req.headers()
+                    .get("x-forwarded-for")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.split(',').next())
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| peer.clone())
+            } else {
+                peer.clone()
+            };
             let needs_body = method == "POST" || method == "PATCH";
             let limit = if path.split('?').next() == Some("/api/shorten/bulk") {
                 app::MAX_BULK_BODY
@@ -97,7 +114,7 @@ async fn serve_conn(
                     ctype: None,
                 }
             } else {
-                app::handle(&st, &method, &path, &body, &admin)
+                app::handle(&st, &method, &path, &body, &admin, &client)
             };
             Ok::<_, Infallible>(to_response(reply))
         }

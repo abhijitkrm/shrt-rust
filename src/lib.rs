@@ -4,6 +4,7 @@ pub mod base62;
 pub mod codec;
 pub mod kv;
 pub mod metrics;
+pub mod ratelimit;
 pub mod server_hyper;
 pub mod server_mini;
 pub mod store;

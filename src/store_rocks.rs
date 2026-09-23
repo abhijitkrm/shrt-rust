@@ -10,8 +10,8 @@ use crate::store_kv::{dec_val, enc_val, Lru};
 use parking_lot::Mutex as PlMutex;
 use rocksdb::compaction_filter::Decision;
 use rocksdb::{
-    BlockBasedOptions, ColumnFamilyDescriptor, DBWithThreadMode, IteratorMode,
-    MergeOperands, MultiThreaded, Options, WriteBatch,
+    BlockBasedOptions, ColumnFamilyDescriptor, DBWithThreadMode, IteratorMode, MergeOperands,
+    MultiThreaded, Options, WriteBatch,
 };
 use rustc_hash::FxHashMap;
 use std::io;
@@ -188,7 +188,10 @@ impl RocksStore {
     }
 
     fn bump(&self, code: &str) {
-        *self.dirty[shard_of(code)].lock().entry(code.into()).or_default() += 1;
+        *self.dirty[shard_of(code)]
+            .lock()
+            .entry(code.into())
+            .or_default() += 1;
     }
 
     fn flush_hits(&self) -> io::Result<()> {
@@ -253,10 +256,15 @@ impl RocksStore {
 
     pub fn resolve(&self, code: &str) -> Option<Arc<str>> {
         if let Some((u, _)) = self.cache.get(code) {
+            crate::metrics::cache_hit();
             self.bump(code);
             return Some(u);
         }
-        let (e, _, u) = self.row(code).ok()??;
+        crate::metrics::cache_miss();
+        let t0 = std::time::Instant::now();
+        let r = self.row(code);
+        crate::metrics::store_read(t0.elapsed().as_micros() as i64);
+        let (e, _, u) = r.ok()??;
         let ua: Arc<str> = u.into();
         self.cache.put(code, ua.clone(), e);
         self.bump(code);
@@ -279,6 +287,7 @@ impl RocksStore {
     }
 
     pub fn shorten(&self, url: &str, alias: Option<&str>, ttl_ms: i64) -> Option<Box<str>> {
+        crate::metrics::store_write();
         let now = now_ms();
         let exp = if ttl_ms > 0 { now + ttl_ms } else { 0 };
         match alias {
@@ -322,11 +331,7 @@ impl RocksStore {
         let Ok(Some((e, c, _))) = self.row(code) else {
             return MutResult::Missing;
         };
-        let exp = if has_ttl {
-            now_ms() + ttl_ms.max(0)
-        } else {
-            e
-        };
+        let exp = if has_ttl { now_ms() + ttl_ms.max(0) } else { e };
         match self.db.put(code.as_bytes(), enc_val(exp, c, url)) {
             Ok(()) => {
                 self.cache.remove(code);
@@ -410,11 +415,13 @@ impl RocksStore {
         urls.len()
     }
 
+    /// /api/health probe: one point lookup proves the DB is open & readable.
+    pub fn healthy(&self) -> bool {
+        self.db.get(b"").is_ok()
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.db
-            .iterator(IteratorMode::Start)
-            .next()
-            .is_none()
+        self.db.iterator(IteratorMode::Start).next().is_none()
     }
 
     pub fn instance(&self) -> i32 {
@@ -439,5 +446,3 @@ impl RocksStore {
         let _ = self.flush_hits();
     }
 }
-
-
