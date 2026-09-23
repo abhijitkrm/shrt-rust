@@ -6,7 +6,7 @@
 #   DURATION=3600 RATE=1157 ./scripts/sim_day.sh  # real-pace hour
 #   COMPRESSED=1 ./scripts/sim_day.sh       # 100M links via bulk, fast
 #
-# Env: STORE RATE DURATION PORT DATA_DIR + any sim_day.py passthrough via "$@"
+# Env: STORE RATE DURATION PORT DATA_DIR KEEP_DATA + any sim_day.py passthrough via "$@"
 set -e
 cd "$(dirname "$0")/.."
 
@@ -14,7 +14,8 @@ PORT=${PORT:-8080}
 STORE=${STORE:-rocksdb}
 RATE=${RATE:-1157}
 DURATION=${DURATION:-600}
-DATA_DIR=${DATA_DIR:-$(mktemp -d)/sim}
+AUTO_DATA=0
+if [ -z "$DATA_DIR" ]; then DATA_DIR=$(mktemp -d)/sim; AUTO_DATA=1; fi
 mkdir -p "$DATA_DIR"
 
 BIN=./target/release/shrt
@@ -31,7 +32,8 @@ echo "starting shrt: $env_store PORT=$PORT (data: $DATA_DIR)"
 env $env_store PORT="$PORT" RATE_LIMIT="${RATE_LIMIT:-0}" \
     WORKERS="${WORKERS:-1}" "$BIN" >"$DATA_DIR/server.log" 2>&1 &
 SRV=$!
-trap 'kill $SRV 2>/dev/null' EXIT
+trap 'kill $SRV 2>/dev/null
+if [ "$AUTO_DATA" = 1 ] && [ "$KEEP_DATA" != 1 ]; then rm -rf "$DATA_DIR"; fi' EXIT
 
 for i in $(seq 1 50); do
   curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null && break
@@ -53,3 +55,6 @@ fi
 echo
 echo "corpus on disk:"
 du -sh "$DATA_DIR"/* 2>/dev/null || true
+
+[ "$AUTO_DATA" = 1 ] && [ "$KEEP_DATA" != 1 ] \
+  && echo "(scratch dir removed on exit; KEEP_DATA=1 to preserve)"
